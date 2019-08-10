@@ -8,7 +8,7 @@ import gitbucket.core.model.Profile.profile.blockingApi._
 import gitbucket.core.service.{AccountService, RepositoryService}
 import io.github.gitbucket.ci.util.CIUtils
 import org.apache.commons.io.FileUtils
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 case class BuildJob(
   userName: String,
@@ -51,8 +51,8 @@ trait CIService { self: AccountService with RepositoryService =>
 
   def saveCISystemConfig(config: CISystemConfig)(implicit s: Session): Unit = {
     CISystemConfigs.map { t =>
-      (t.maxBuildHistory, t.maxParallelBuilds)
-    }.update((config.maxBuildHistory, config.maxParallelBuilds))
+      (t.maxBuildHistory, t.maxParallelBuilds, t.enableDocker, t.dockerCommand.?, t.enableDockerCompose, t.dockerComposeCommand.?)
+    }.update((config.maxBuildHistory, config.maxParallelBuilds, config.enableDocker, config.dockerCommand, config.enableDockerCompose, config.dockerComposeCommand))
   }
 
   def loadCISystemConfig()(implicit s: Session): CISystemConfig = {
@@ -145,7 +145,6 @@ trait CIService { self: AccountService with RepositoryService =>
   }
 
   def getQueuedJobs(userName: String, repositoryName: String): Seq[BuildJob] = {
-    import scala.collection.JavaConverters._
     BuildManager.queue.iterator.asScala.filter { job =>
       job.userName == userName && job.repositoryName == repositoryName
     }.toSeq

@@ -6,7 +6,6 @@ import gitbucket.core.controller.ControllerBase
 import gitbucket.core.service.RepositoryService.RepositoryInfo
 import gitbucket.core.service.{AccountService, RepositoryService}
 import gitbucket.core.util.Directory.getRepositoryDir
-import gitbucket.core.util.SyntaxSugars.using
 import gitbucket.core.util._
 import gitbucket.core.util.Implicits._
 import gitbucket.core.view.helpers.datetimeAgo
@@ -19,6 +18,8 @@ import org.apache.commons.io.IOUtils
 import org.eclipse.jgit.api.Git
 import org.json4s.jackson.Serialization
 import org.scalatra.{BadRequest, Ok}
+
+import scala.util.Using
 
 object CIController {
 
@@ -46,6 +47,8 @@ object CIController {
     buildType: Option[String],
     buildScript: Option[String],
     buildFile: Option[String],
+    dockerfile: Option[String],
+    composeFile: Option[String],
     notification: Boolean,
     skipWords: Option[String],
     runWords: Option[String]
@@ -53,7 +56,11 @@ object CIController {
 
   case class CISystemConfigForm(
     maxBuildHistory: Int,
-    maxParallelBuilds: Int
+    maxParallelBuilds: Int,
+    enableDocker: Boolean,
+    dockerCommand: Option[String],
+    enableDockerCompose: Boolean,
+    dockerComposeCommand: Option[String]
   )
 
 }
@@ -68,6 +75,8 @@ class CIController extends ControllerBase
     "buildType" -> trim(label("Build type", optionalRequiredIfChecked("enableBuild", text()))),
     "buildScript" -> trim(label("Build script", optionalRequired(_("buildType") == Seq("script"), text()))),
     "buildFile" -> trim(label("Build file", optionalRequired(_("buildType") == Seq("file"), text()))),
+    "dockerfile" -> trim(label("Dockerfile", optional(text()))),
+    "composeFile" -> trim(label("docker-compose.yml", optional(text()))),
     "notification" -> trim(label("Notification", boolean())),
     "skipWords" -> trim(label("Skip words", optional(text()))),
     "runWords" -> trim(label("Run words", optional(text())))
@@ -75,7 +84,11 @@ class CIController extends ControllerBase
 
   val ciSystemConfigForm = mapping(
     "maxBuildHistory" -> trim(label("Max build history", number())),
-    "maxParallelBuilds" -> trim(label("Max parallel builds", number()))
+    "maxParallelBuilds" -> trim(label("Max parallel builds", number())),
+    "enableDocker" -> trim(label("Enable docker", boolean())),
+    "dockerCommand" -> trim(label("docker command", optional(text()))),
+    "enableDockerCompose" -> trim(label("Enable docker-compse", boolean())),
+    "dockerComposeCommand" -> trim(label("docker-compose command", optional(text())))
   )(CISystemConfigForm.apply)
 
   get("/:owner/:repository/build")(referrersOnly { repository =>
@@ -123,7 +136,7 @@ class CIController extends ControllerBase
             committer   = result.commitUserName,
             author      = result.buildAuthor,
             startTime   = datetimeAgo(result.startTime),
-            duration    = ((result.endTime.getTime - result.startTime.getTime) / 1000) + " sec"
+            duration    = s"${((result.endTime.getTime - result.startTime.getTime) / 1000)} sec"
           )
         }
     }.map { status =>
@@ -152,7 +165,7 @@ class CIController extends ControllerBase
 
   ajaxPost("/:owner/:repository/build/run")(writableUsersOnly { repository =>
     loadCIConfig(repository.owner, repository.name).map { config =>
-      using(Git.open(getRepositoryDir(repository.owner, repository.name))) { git =>
+      Using.resource(Git.open(getRepositoryDir(repository.owner, repository.name))) { git =>
         JGitUtil.getDefaultBranch(git, repository).map { case (objectId, revision) =>
           val revCommit = JGitUtil.getRevCommitFromId(git, objectId)
           runBuild(
@@ -225,7 +238,7 @@ class CIController extends ControllerBase
     if(file.isFile){
       contentType = FileUtil.getMimeType(path)
       response.setContentLength(file.length.toInt)
-      using(new FileInputStream(file)){ in =>
+      Using.resource(new FileInputStream(file)){ in =>
         IOUtils.copy(in, response.getOutputStream)
       }
     } else {
@@ -297,7 +310,7 @@ class CIController extends ControllerBase
         committer   = result.commitUserName,
         author      = result.buildUserName,
         startTime   = datetimeAgo(result.startTime),
-        duration    = ((result.endTime.getTime - result.startTime.getTime) / 1000) + " sec"
+        duration    = s"${((result.endTime.getTime - result.startTime.getTime) / 1000)} sec"
       )
     }
 
@@ -306,7 +319,7 @@ class CIController extends ControllerBase
   })
 
   get("/:owner/:repository/settings/build")(ownerOnly { repository =>
-    gitbucket.ci.html.config(repository, loadCIConfig(repository.owner, repository.name), flash.get("info"))
+    gitbucket.ci.html.config(repository, loadCIConfig(repository.owner, repository.name), loadCISystemConfig(), flash.get("info"))
   })
 
   post("/:owner/:repository/settings/build", buildConfigForm)(ownerOnly { (form, repository) =>
@@ -320,6 +333,8 @@ class CIController extends ControllerBase
           (buildType match {
             case "script" => form.buildScript.getOrElse("")
             case "file" => form.buildFile.getOrElse("")
+            case "docker" => form.dockerfile.getOrElse("")
+            case "docker-compose" => form.composeFile.getOrElse("")
             case _ => ""
           }),
           form.notification,
@@ -330,7 +345,7 @@ class CIController extends ControllerBase
     } else {
       saveCIConfig(repository.owner, repository.name, None)
     }
-    flash += "info" -> "Build configuration has been updated."
+    flash.update("info", "Build configuration has been updated.")
     redirect(s"/${repository.owner}/${repository.name}/settings/build")
   })
 
@@ -350,7 +365,14 @@ class CIController extends ControllerBase
   })
 
   post("/admin/build", ciSystemConfigForm)(adminOnly { form =>
-    saveCISystemConfig(CISystemConfig(maxBuildHistory = form.maxBuildHistory, maxParallelBuilds = form.maxParallelBuilds))
+    saveCISystemConfig(CISystemConfig(
+      maxBuildHistory = form.maxBuildHistory,
+      maxParallelBuilds = form.maxParallelBuilds,
+      enableDocker = form.enableDocker,
+      dockerCommand = form.dockerCommand,
+      enableDockerCompose = form.enableDockerCompose,
+      dockerComposeCommand = form.dockerComposeCommand
+    ))
     BuildManager.setMaxParallelBuilds(form.maxParallelBuilds)
     redirect("/admin/build")
   })

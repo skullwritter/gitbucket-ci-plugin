@@ -8,13 +8,14 @@ import gitbucket.core.model.Profile._
 import gitbucket.core.service._
 import gitbucket.core.util.Directory.getRepositoryDir
 import gitbucket.core.util.JGitUtil
-import gitbucket.core.util.SyntaxSugars.using
 import io.github.gitbucket.ci.service.CIService
 import org.eclipse.jgit.api.Git
 import profile.api._
+import scala.util.Using
 
 class CIPullRequestHook extends PullRequestHook
-  with PullRequestService with IssuesService with CommitsService with AccountService
+  with PullRequestService with IssuesService with CommitsService with AccountService with WebHookService
+  with WebHookPullRequestService with WebHookPullRequestReviewCommentService with ActivityService with MergeService
   with RepositoryService with LabelsService with PrioritiesService with MilestonesService with CIService {
 
   override def created(issue: Issue, repository: RepositoryInfo)(implicit session: Session, context: Context): Unit = {
@@ -24,7 +25,7 @@ class CIPullRequestHook extends PullRequestHook
         buildAuthor  <- context.loginAccount
         buildConfig  <- loadCIConfig(pullreq.userName, pullreq.repositoryName)
       } yield {
-        val revCommit = using(Git.open(getRepositoryDir(pullreq.requestUserName, pullreq.requestRepositoryName))) { git =>
+        val revCommit = Using.resource(Git.open(getRepositoryDir(pullreq.requestUserName, pullreq.requestRepositoryName))) { git =>
           val objectId = git.getRepository.resolve(pullreq.commitIdTo)
           JGitUtil.getRevCommitFromId(git, objectId)
         }
@@ -55,7 +56,7 @@ class CIPullRequestHook extends PullRequestHook
         buildConfig  <- loadCIConfig(pullreq.userName, pullreq.repositoryName)
       } yield {
         if(!buildConfig.runWordsSeq.find(content.contains).isEmpty){
-          val revCommit = using(Git.open(getRepositoryDir(pullreq.requestUserName, pullreq.requestRepositoryName))) { git =>
+          val revCommit = Using.resource(Git.open(getRepositoryDir(pullreq.requestUserName, pullreq.requestRepositoryName))) { git =>
             val objectId = git.getRepository.resolve(pullreq.commitIdTo)
             JGitUtil.getRevCommitFromId(git, objectId)
           }
